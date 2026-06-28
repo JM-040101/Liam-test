@@ -269,8 +269,141 @@ environment — that is the first thing to validate (see §8).
 ## 10. Repository facts
 
 - Branch: `claude/ai-agent-software-integration-ximb7c`
-- Layout: everything under `switchboard/` (`switchboard/` package,
-  `examples/`, `tests/`, `README.md`, this `HANDOFF.md`, `requirements.txt`).
+- Layout: the prototype is under `switchboard/` (`switchboard/` package,
+  `examples/`, `tests/`, `README.md`, `requirements.txt`); this `HANDOFF.md`
+  lives in the repo-root `plans/` folder.
 - Generated artifacts (`examples/metamap.dot`, `*.svg`, `__pycache__`) are
   git-ignored.
 - The repo was otherwise empty (a stub `README.md`) before this work.
+
+---
+
+## Appendix A — Full research summary (the agent↔software landscape)
+
+The build grew out of a broad research turn. §2 kept only the findings that
+shaped the code; this appendix preserves the rest so the document is the
+complete record. The original question had four parts: (1) is an API key the
+best way for an AI to interact with software; (2) how to build a "harness" so an
+agent acts as the user; (3) how to adapt existing software for agent use;
+(4) what to call the moment an AI performs a human action. Five parallel agents
+researched it (Perplexity wasn't available, so this used WebSearch/WebFetch).
+
+### A.1 Interfaces & the API-key question
+
+- **There is a hierarchy, not one winner:** prefer a structured programmatic
+  interface (API exposed as a typed tool, or a CLI) when it exists; fall back to
+  computer-use/browser automation only for UI-only systems.
+- **CLI is strikingly token-efficient.** A cited benchmark found CLI tools used
+  ~1.3k–8.8k tokens/task at ~100% reliability vs MCP's ~32k–82k at 72%
+  (10×–32× cheaper); the gap is "almost entirely schema" (43 tool defs injected
+  per turn, 1–2 used). *Treat exact multiples as indicative — single benchmark.*
+- **MCP wraps APIs, it doesn't replace them** — turns N×M integration into N+M;
+  worth it when 3+ tools feed one workflow and runtime discovery matters.
+  Anthropic's counters to MCP token bloat: the **Tool Search Tool** (~85% context
+  reduction) and **code-execution-with-MCP** (tools as a code API).
+- **Accessibility tree / semantic DOM beats screenshots** for structured web:
+  ~200–400 tokens/page vs 15k+. Microsoft's Playwright MCP drives browsers from
+  a11y snapshots rather than vision. Pure-vision still needed for non-semantic UIs.
+- **Computer-use is the least reliable paradigm** (OpenAI CUA ~38% OSWorld at
+  launch; frontier models ~80s% on web benchmarks) and most exposed to prompt
+  injection; vendors warn against it for precision/sensitive tasks.
+- **Auth (the literal "API key" question): static API keys are NOT best.** They
+  fail on revocability, attribution, scoping, rotation. Baseline = scoped,
+  short-lived **OAuth 2.1** tokens (now *required* by the MCP spec for remote
+  servers; `client_credentials` for no-human-present calls). Frontier = per-agent
+  **verifiable identity** (SPIFFE/SVID, IETF drafts, vendors like Aembit/WorkOS).
+  Reality check: a 2026 survey found **93% of agent projects still use unscoped
+  API keys** and **74% report over-privileged agents**.
+
+### A.2 Harness architecture
+
+- Agent vs workflow (Anthropic): *workflows* follow predefined code paths;
+  *agents* let the LLM direct its own process. Guidance: **start simple**.
+- Canonical loop: perceive → reason → act → observe (**ReAct**, Yao et al. 2022);
+  Anthropic's coding variant: gather context → act → verify → repeat.
+- **Tool/ACI design is the real craft**: namespace tools, return *actionable*
+  errors, make tools token-efficient, prefer few consolidated tools.
+- **Sandboxing tiers:** microVMs (Firecracker) > gVisor > hardened containers.
+  Plain Docker is insufficient (shared kernel; 2025 runc escape CVEs). Add
+  network-egress filtering. OWASP Agentic AI Top 10 (Dec 2025) ranks
+  "Unexpected Code Execution" top-tier.
+- **Context engineering**: smallest high-signal token set; compaction; persist
+  state to files+git for long-running agents. **Multi-agent**: token usage
+  explained ~80% of performance variance; ~15× the tokens of single-agent.
+- **Frameworks:** Claude Agent SDK, OpenAI Agents SDK (Agents/Handoffs/Guardrails
+  /Sessions/Tracing), LangGraph (checkpointed state graph, HITL interrupts).
+- Cautionary history: AutoGPT/BabyAGI (2023) failed on infinite loops + lost state.
+
+### A.3 Adapting existing software for agents
+
+- **Agent Experience (AX)** — named discipline coined by Netlify's Matt Biilmann
+  (early 2025); "the holistic experience AI agents have as the user of a product."
+  Four pillars: Access, Context, Tools, Orchestration.
+- **`llms.txt` — skip it or treat as low-proof.** Adopted (800k+ sites) but
+  Google explicitly doesn't support it and an Ahrefs analysis found ~97% of
+  published files got **zero** crawler requests. Prefer real structured data +
+  robots.txt + MCP tools.
+- **Wrapping REST as MCP is the dominant retrofit** (FastMCP, Azure APIM), **but
+  1:1 thin wrapping is an anti-pattern** — an arXiv study of 116 servers found
+  92% are bare API wrappers exposing ~19% of operations. APIs are *resource*-based;
+  good agent tools are *task*-based (orchestrate several calls into one intent).
+- **Design endpoints for agents:** idempotency keys (agents retry ~15–30% of
+  calls), machine-readable errors (RFC 7807), strong typed schemas, small
+  deterministic steps.
+- **Reuse the accessibility tree** — broken a11y breaks agents like it breaks
+  screen readers, making the investment dual-purpose.
+
+### A.4 Standards & frameworks landscape
+
+- **MCP** (Anthropic, Nov 2024). Architecture: JSON-RPC clients↔servers exposing
+  tools/resources/prompts (LSP-inspired). Current spec **2025-11-25** (added
+  Tasks); 2025-03-26 added Streamable HTTP + OAuth 2.1; 2025-06-18 made servers
+  OAuth Resource Servers + Elicitation. Adopted by OpenAI (Mar 2025), Google
+  (Apr 2025). **Donated to the Agentic AI Foundation (Linux Foundation) Dec 9,
+  2025**; ~97M monthly SDK downloads, ~10k servers at the one-year mark.
+- **A2A** (Google, Apr 2025) — agent↔agent discovery/delegation; donated to Linux
+  Foundation Jun 2025; 150+ orgs. Complementary to MCP, not competing.
+- **Computer use:** Anthropic public beta Oct 2024 (Claude 3.5 Sonnet,
+  screenshot-action loop); OpenAI Operator/CUA Jan 2025 → folded into "ChatGPT
+  agent" Jul 2025. Function calling underpins all of it.
+
+### A.5 Terminology — "the moment an AI does a human action"
+
+**No single canonical buzzword exists** (be skeptical of "agentic moment" etc.).
+Best-fit terms: **"computer use" / "computer-using agent (CUA)"** for GUI
+clicking/typing; **"action" / the Act step** of the ReAct loop for the generic
+moment; **"agentic"** for the umbrella (2025 word of the year). Adjacent:
+*tool use/function calling*, *GUI grounding* (locating the element), *HITL vs
+human-on-the-loop*, *embodiment* (physical/robotic only), and the *RPA* lineage
+(rule-based bots; agentic AI is the reasoning successor).
+
+### A.6 Cross-cutting: security
+
+- **Lethal trifecta** (Simon Willison, Jun 2025): private-data access + untrusted
+  content + external comms ⇒ exfiltration risk, regardless of model.
+- **Meta's "Agents Rule of Two"** (Oct 2025): hold at most two of those three.
+- **MCP tool-poisoning** produced real 2025 CVEs (MCPoison CVE-2025-54136,
+  CurXecute CVE-2025-54135).
+
+> Sourcing caveat: several primaries (anthropic.com, openai.com docs, some vendor
+> blogs) returned HTTP 403; some quantitative figures came via search excerpts.
+> MCP spec, arXiv papers, and Anthropic engineering posts are the firm primaries.
+
+---
+
+## Appendix B — Decision log & thread chronology
+
+1. **Research turn** — broad question on agent↔software interaction; answered via
+   a 5-agent parallel research fan-out (the `deep-research` skill, run manually).
+2. **Concept turn** — requester reframed toward an orchestration agent
+   ("switchboard operator / god node / Ralph loops / graph spine"). We produced a
+   first-principles synthesis (the five laws) and the term-translation table.
+3. **Substrate decision** — offered four build substrates; requester chose the
+   **Claude Agent SDK** (over pure bash+`claude -p`, LangGraph, or a design doc).
+4. **Build** — Python, stdlib-only core, offline-first via a simulated backend,
+   all SDK specifics isolated to `backend.py`. Demo + smoke tests green offline.
+5. **Handoff** — this document.
+
+Key standing choices: Python; zero-dependency core; lexical routing (swappable);
+single-file SDK isolation; hierarchical-ready operator. Open decisions are the
+§8 limitations — the most important being validating the real-SDK path.
